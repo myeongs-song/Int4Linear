@@ -1,3 +1,7 @@
+#define _BENCHMARK
+#ifdef _BENCHMARK
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -5,7 +9,7 @@
 
 #include <cuda.h>
 
-#include "kernels/linear.h"
+#include "kernels/linear_v1.5.h"
 #include "utils/packer.h"
 
 
@@ -41,9 +45,11 @@ int main(void) {
     cudaMemcpy(x_packed_d, (void*)x_packed_h, m*sizeof(int)*packed_k, cudaMemcpyHostToDevice);
     cudaMemcpy(w_packed_d, (void*)w_packed_h, n*sizeof(int)*packed_k, cudaMemcpyHostToDevice);
 
-    constexpr int n_threads = 2*4*32;
-    constexpr int out_tile_size_m = 2*16;
-    constexpr int out_tile_size_n = 4*8;
+    using config = LinearConfig<6, 6, 7, 5, 4>;
+
+    constexpr int n_threads = config::kWarpsPerThreadblockM * config::kWarpsPerThreadblockN * (1 << LOG2_WARP_SIZE);
+    constexpr int out_tile_size_m = config::kThreadblockShapeM;
+    constexpr int out_tile_size_n = config::kThreadblockShapeN;
     int n_blocks_m = (m+out_tile_size_m-1)/out_tile_size_m;
     int n_blocks_n = (n+out_tile_size_n-1)/out_tile_size_n;
     dim3 blockDim(n_threads, 1);
@@ -58,7 +64,7 @@ int main(void) {
 
     // Warp-up phase
     for (int i = 0; i < 5; ++i) {
-        linear_v1_kernel<LinearConfig<2, 4, 2>><<<gridDim, blockDim>>>(args);
+        linear_v1_5_kernel<config><<<gridDim, blockDim>>>(args);
         cudaDeviceSynchronize();
     }
 
@@ -86,7 +92,7 @@ int main(void) {
 
         // Get latency
         cudaEventRecord(start, 0);
-        linear_v1_kernel<LinearConfig<2, 4, 2>><<<gridDim, blockDim>>>(args);
+        linear_v1_5_kernel<config><<<gridDim, blockDim>>>(args);
         cudaEventRecord(end, 0);
         cudaEventSynchronize(end);
         float cur_ms = 0.0;
@@ -108,3 +114,5 @@ int main(void) {
 
     return 0;
 }
+
+#endif

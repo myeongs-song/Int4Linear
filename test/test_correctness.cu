@@ -4,10 +4,10 @@
 
 #include <cuda.h>
 
-#include "kernels/linear.h"
+#include "kernels/linear_v2.h"
 #include "utils/packer.h"
 
-//#define _DEBUG_LINEAR_V1_H
+//#define _DEBUG_LINEAR
 
 void linear_ref(int *x, int *w, int *y, int m, int n, int k) {
     for (int i = 0; i < m; ++i) {
@@ -26,7 +26,7 @@ bool is_same(int *a, int *b, int count) {
     return true;
 }
 
-#ifdef _DEBUG_LINEAR_V1_H
+#ifdef _DEBUG_LINEAR
 
 int main(void) {
 
@@ -57,7 +57,7 @@ int main(void) {
     cudaMemcpy(x_packed_d, (void*)x_packed_h, m*sizeof(int)*packed_k, cudaMemcpyHostToDevice);
     cudaMemcpy(w_packed_d, (void*)w_packed_h, n*sizeof(int)*packed_k, cudaMemcpyHostToDevice);
 
-    linear_v1_h2w4k4_launch(x_packed_d, w_packed_d, y_d, m, n, k);
+    linear_v2_launch(x_packed_d, w_packed_d, y_d, m, n, k);
 
     // Copy the result to the host
     cudaMemcpy(y_h, y_d, m*n*sizeof(int), cudaMemcpyDeviceToHost);
