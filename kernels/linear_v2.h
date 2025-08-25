@@ -45,6 +45,20 @@ struct LinearArgs {
 typedef struct LinearArgs LinearArgs;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// __device__ __forceinline__ void copy_4b_global_to_shared_async(void* __restrict__ shared_dest, const void* __restrict__ global_src) {
+//     asm volatile (
+//         "cp.async.ca.shared.global [%0], [%1], %2;"
+//         : 
+//         : "r"(__nvvm_get_smem_pointer(shared_dest)), "l"(global_src), "n"(4)
+//         : "memory"
+//     );
+// }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// __device__ __forceinline__ void wait_for_async_copy() {
+//     asm volatile("cp.async.wait_group 0;");
+// }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
