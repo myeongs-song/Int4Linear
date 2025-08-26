@@ -157,7 +157,7 @@ __global__ void linear_v2_kernel(LinearArgs args)
             
     #pragma unroll
     for (int i = 0; i < kNXCopyIters; ++i) {
-        int flattened_thread_id = threadIdx.x + i * (blockDim.x+1);
+        int flattened_thread_id = threadIdx.x + i * blockDim.x;
         int smem_x_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
         int smem_x_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
         if (smem_x_row_id < kThreadblockShapeM) { // Out-of-bounds check
