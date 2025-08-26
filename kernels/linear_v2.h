@@ -123,8 +123,8 @@ __global__ void linear_v2_kernel(LinearArgs args)
     constexpr int kInstsPerWarpN = LinearConfig::kInstsPerWarpN;
     constexpr int kInstsPerWarpK = LinearConfig::kInstsPerWarpK;
 
-    __shared__ int smem_x[2][kThreadblockShapeM][kThreadblockShapeKPacked];
-    __shared__ int smem_w[2][kThreadblockShapeN][kThreadblockShapeKPacked];
+    __shared__ int smem_x[2][kThreadblockShapeM][kThreadblockShapeKPacked+4];
+    __shared__ int smem_w[2][kThreadblockShapeN][kThreadblockShapeKPacked+4];
 
     int32_t X_frag[4];
     int32_t W_frag[2];
@@ -152,43 +152,60 @@ __global__ void linear_v2_kernel(LinearArgs args)
     constexpr int kNXCopyIters = cdiv(kThreadblockShapeM * kThreadblockShapeKPacked, kNThreads*4);
     constexpr int kNWCopyIters = cdiv(kThreadblockShapeN * kThreadblockShapeKPacked, kNThreads*4);
     
-    if (n_outer_iters > 0) {
-        int x_offset = blockIdx.y * kThreadblockShapeM * (args.k>>3);
-        int w_offset = blockIdx.x * kThreadblockShapeN * (args.k>>3);
-        
-        #pragma unroll
-        for (int i = 0; i < kNXCopyIters; ++i) {
-            int flattened_thread_id = threadIdx.x + i * blockDim.x;
-            int smem_x_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
-            int smem_x_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
-            if (smem_x_row_id < kThreadblockShapeM) { // Out-of-bounds check
-                cp_async_cg_shared_global<16>(
-                    &smem_x[0][smem_x_row_id][smem_x_col_id], 
-                    &X_ptr[x_offset + (smem_x_row_id*(args.k>>3)) + smem_x_col_id]);
-            }
+    int x_offset = blockIdx.y * kThreadblockShapeM * (args.k>>3);
+    int w_offset = blockIdx.x * kThreadblockShapeN * (args.k>>3);
+            
+    #pragma unroll
+    for (int i = 0; i < kNXCopyIters; ++i) {
+        int flattened_thread_id = threadIdx.x + i * (blockDim.x+1);
+        int smem_x_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
+        int smem_x_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
+        if (smem_x_row_id < kThreadblockShapeM) { // Out-of-bounds check
+            cp_async_cg_shared_global<16>(
+                &smem_x[0][smem_x_row_id][smem_x_col_id], 
+                &X_ptr[x_offset + (smem_x_row_id*(args.k>>3)) + smem_x_col_id]);
         }
-        #pragma unroll
-        for (int i = 0; i < kNWCopyIters; ++i) {
-            int flattened_thread_id = threadIdx.x + i * blockDim.x;
-            int smem_w_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
-            int smem_w_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
-            if (smem_w_row_id < kThreadblockShapeN) { // Out-of-bounds check
-                cp_async_cg_shared_global<16>(
-                    &smem_w[0][smem_w_row_id][smem_w_col_id], 
-                    &W_ptr[w_offset + (smem_w_row_id*(args.k>>3)) + smem_w_col_id]);
-            }
-        }
-        cp_async_commit_group();
-        cp_async_wait_group<0>();
-        __syncthreads();
     }
+    #pragma unroll
+    for (int i = 0; i < kNWCopyIters; ++i) {
+        int flattened_thread_id = threadIdx.x + i * blockDim.x;
+        int smem_w_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
+        int smem_w_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
+        if (smem_w_row_id < kThreadblockShapeN) { // Out-of-bounds check
+            cp_async_cg_shared_global<16>(
+                &smem_w[0][smem_w_row_id][smem_w_col_id], 
+                &W_ptr[w_offset + (smem_w_row_id*(args.k>>3)) + smem_w_col_id]);
+        }
+    }
+    cp_async_commit_group();
 
     for (int outer_iter = 1; outer_iter < n_outer_iters; ++outer_iter) {
         int load_buf_idx = outer_iter & 0x1;
         int compute_buf_idx = (outer_iter - 1) & 0x1;
 
-        int x_offset = blockIdx.y * kThreadblockShapeM * (args.k>>3) + outer_iter * kThreadblockShapeKPacked;
-        int w_offset = blockIdx.x * kThreadblockShapeN * (args.k>>3) + outer_iter * kThreadblockShapeKPacked;
+        x_offset = blockIdx.y * kThreadblockShapeM * (args.k>>3) + outer_iter * kThreadblockShapeKPacked;
+        w_offset = blockIdx.x * kThreadblockShapeN * (args.k>>3) + outer_iter * kThreadblockShapeKPacked;
+        
+        cp_async_wait_group<0>();
+        __syncthreads();
+        #pragma unroll
+        for (int mid = 0; mid < kInstsPerWarpM; ++mid) {
+            int x_inst_row_offset = x_mma_row_offset + (mid<<4);
+            #pragma unroll
+            for (int nid = 0; nid < kInstsPerWarpN; ++nid) {
+                int w_inst_row_offset = w_mma_row_offset + (nid<<3);
+                #pragma unroll
+                for (int kid = 0; kid < kInstsPerWarpK; ++kid) {
+                    // shmem -> reg
+                    uint32_t x_addr = __cvta_generic_to_shared(&(smem_x[compute_buf_idx][x_inst_row_offset][x_mma_col_offset + (kid<<3)]));
+                    uint32_t w_addr = __cvta_generic_to_shared(&(smem_w[compute_buf_idx][w_inst_row_offset][w_mma_col_offset + (kid<<3)]));
+                    ldmatrix_sync_aligned_m8n8_x4_b16(X_frag, x_addr);
+                    ldmatrix_sync_aligned_m8n8_x2_b16(W_frag, w_addr);
+                    // compute
+                    mma_sync_aligned_m16n8k64_rowcol_s4s4s32(Y_frag[mid][nid], X_frag, W_frag);
+                }
+            }
+        }
         
         #pragma unroll
         for (int i = 0; i < kNXCopyIters; ++i) {
@@ -213,47 +230,26 @@ __global__ void linear_v2_kernel(LinearArgs args)
             }
         }
         cp_async_commit_group();
-
-        #pragma unroll
-        for (int mid = 0; mid < kInstsPerWarpM; ++mid) {
-            int x_inst_row_offset = x_mma_row_offset + (mid<<4);
-            #pragma unroll
-            for (int nid = 0; nid < kInstsPerWarpN; ++nid) {
-                int w_inst_row_offset = w_mma_row_offset + (nid<<3);
-                #pragma unroll
-                for (int kid = 0; kid < kInstsPerWarpK; ++kid) {
-                    // shmem -> reg
-                    uint32_t x_addr = __cvta_generic_to_shared(&(smem_x[compute_buf_idx][x_inst_row_offset][x_mma_col_offset + (kid<<3)]));
-                    uint32_t w_addr = __cvta_generic_to_shared(&(smem_w[compute_buf_idx][w_inst_row_offset][w_mma_col_offset + (kid<<3)]));
-                    ldmatrix_sync_aligned_m8n8_x4_b16(X_frag, x_addr);
-                    ldmatrix_sync_aligned_m8n8_x2_b16(W_frag, w_addr);
-                    // compute
-                    mma_sync_aligned_m16n8k64_rowcol_s4s4s32(Y_frag[mid][nid], X_frag, W_frag);
-                }
-            }
-        }
-        cp_async_wait_group<0>();
-        __syncthreads();
     }
 
-    if (n_outer_iters > 0) {
-        int last_buf_idx = (n_outer_iters - 1) % 2;
+    int last_buf_idx = (n_outer_iters - 1) % 2;
+    cp_async_wait_group<0>();
+    __syncthreads();
+    #pragma unroll
+    for (int mid = 0; mid < kInstsPerWarpM; ++mid) {
+        int x_inst_row_offset = x_mma_row_offset + (mid<<4);
         #pragma unroll
-        for (int mid = 0; mid < kInstsPerWarpM; ++mid) {
-            int x_inst_row_offset = x_mma_row_offset + (mid<<4);
+        for (int nid = 0; nid < kInstsPerWarpN; ++nid) {
+            int w_inst_row_offset = w_mma_row_offset + (nid<<3);
             #pragma unroll
-            for (int nid = 0; nid < kInstsPerWarpN; ++nid) {
-                int w_inst_row_offset = w_mma_row_offset + (nid<<3);
-                #pragma unroll
-                for (int kid = 0; kid < kInstsPerWarpK; ++kid) {
-                    // shmem -> reg
-                    uint32_t x_addr = __cvta_generic_to_shared(&(smem_x[last_buf_idx][x_inst_row_offset][x_mma_col_offset + (kid<<3)]));
-                    uint32_t w_addr = __cvta_generic_to_shared(&(smem_w[last_buf_idx][w_inst_row_offset][w_mma_col_offset + (kid<<3)]));
-                    ldmatrix_sync_aligned_m8n8_x4_b16(X_frag, x_addr);
-                    ldmatrix_sync_aligned_m8n8_x2_b16(W_frag, w_addr);
-                    // compute
-                    mma_sync_aligned_m16n8k64_rowcol_s4s4s32(Y_frag[mid][nid], X_frag, W_frag);
-                }
+            for (int kid = 0; kid < kInstsPerWarpK; ++kid) {
+                // shmem -> reg
+                uint32_t x_addr = __cvta_generic_to_shared(&(smem_x[last_buf_idx][x_inst_row_offset][x_mma_col_offset + (kid<<3)]));
+                uint32_t w_addr = __cvta_generic_to_shared(&(smem_w[last_buf_idx][w_inst_row_offset][w_mma_col_offset + (kid<<3)]));
+                ldmatrix_sync_aligned_m8n8_x4_b16(X_frag, x_addr);
+                ldmatrix_sync_aligned_m8n8_x2_b16(W_frag, w_addr);
+                // compute
+                mma_sync_aligned_m16n8k64_rowcol_s4s4s32(Y_frag[mid][nid], X_frag, W_frag);
             }
         }
     }
