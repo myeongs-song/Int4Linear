@@ -5,7 +5,7 @@
 #include <cuda_pipeline.h>
 
 #define LOG2_WARP_SIZE 5
-
+#define cdiv(a, b) ((a) + (b) - 1) / (b)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -45,20 +45,27 @@ struct LinearArgs {
 typedef struct LinearArgs LinearArgs;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// __device__ __forceinline__ void copy_4b_global_to_shared_async(void* __restrict__ shared_dest, const void* __restrict__ global_src) {
-//     asm volatile (
-//         "cp.async.ca.shared.global [%0], [%1], %2;"
-//         : 
-//         : "r"(__nvvm_get_smem_pointer(shared_dest)), "l"(global_src), "n"(4)
-//         : "memory"
-//     );
-// }
+
+template <unsigned CopySize>
+__device__ __forceinline__ void cp_async_cg_shared_global(void* smem_dst, const void* gmem_src) {
+    static_assert(CopySize == 4 || CopySize == 8 || CopySize == 16, "Unsupported copy size.");
+    uint32_t smem_addr = __cvta_generic_to_shared(smem_dst);
+    uint64_t gmem_addr = __cvta_generic_to_global(gmem_src);
+    asm volatile ("cp.async.cg.shared.global [%0], [%1], %2;\n" : : "r"(smem_addr), "l"(gmem_addr), "n"(CopySize));
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// __device__ __forceinline__ void wait_for_async_copy() {
-//     asm volatile("cp.async.wait_group 0;");
-// }
+__device__ __forceinline__ void cp_async_commit_group() {
+    asm volatile ("cp.async.commit_group;\n");
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template <unsigned N>
+__device__ __forceinline__ void cp_async_wait_group() {
+    asm volatile ("cp.async.wait_group %0;\n" : : "n"(N));
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -141,37 +148,40 @@ __global__ void linear_v2_kernel(LinearArgs args)
     
     int n_outer_iters = (args.k + kThreadblockShapeK - 1) / (kThreadblockShapeK);
 
-    constexpr int kXEntriesPerThread
-        = kThreadblockShapeM * kThreadblockShapeKPacked / 
-        ((kWarpsPerThreadblockM * kWarpsPerThreadblockN) << LOG2_WARP_SIZE);
-    constexpr int kWEntriesPerThread
-        = kThreadblockShapeN * kThreadblockShapeKPacked / 
-        ((kWarpsPerThreadblockM * kWarpsPerThreadblockN) << LOG2_WARP_SIZE);
+    constexpr int kNThreads = (kWarpsPerThreadblockM * kWarpsPerThreadblockN) << LOG2_WARP_SIZE;
+    constexpr int kNXCopyIters = cdiv(kThreadblockShapeM * kThreadblockShapeKPacked, kNThreads*4);
+    constexpr int kNWCopyIters = cdiv(kThreadblockShapeN * kThreadblockShapeKPacked, kNThreads*4);
     
     if (n_outer_iters > 0) {
         int x_offset = blockIdx.y * kThreadblockShapeM * (args.k>>3);
         int w_offset = blockIdx.x * kThreadblockShapeN * (args.k>>3);
         
         #pragma unroll
-        for (int i = 0; i < kXEntriesPerThread; ++i) {
+        for (int i = 0; i < kNXCopyIters; ++i) {
             int flattened_thread_id = threadIdx.x + i * blockDim.x;
-            int smem_x_row_id = flattened_thread_id / kThreadblockShapeKPacked;
-            int smem_x_col_id = flattened_thread_id % kThreadblockShapeKPacked;
+            int smem_x_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
+            int smem_x_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
             if (smem_x_row_id < kThreadblockShapeM) { // Out-of-bounds check
-                smem_x[0][smem_x_row_id][smem_x_col_id] = X_ptr[x_offset + (smem_x_row_id*(args.k>>3)) + smem_x_col_id];
+                cp_async_cg_shared_global<16>(
+                    &smem_x[0][smem_x_row_id][smem_x_col_id], 
+                    &X_ptr[x_offset + (smem_x_row_id*(args.k>>3)) + smem_x_col_id]);
             }
         }
         #pragma unroll
-        for (int i = 0; i < kWEntriesPerThread; ++i) {
+        for (int i = 0; i < kNWCopyIters; ++i) {
             int flattened_thread_id = threadIdx.x + i * blockDim.x;
-            int smem_w_row_id = flattened_thread_id / kThreadblockShapeKPacked;
-            int smem_w_col_id = flattened_thread_id % kThreadblockShapeKPacked;
+            int smem_w_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
+            int smem_w_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
             if (smem_w_row_id < kThreadblockShapeN) { // Out-of-bounds check
-                smem_w[0][smem_w_row_id][smem_w_col_id] = W_ptr[w_offset + (smem_w_row_id*(args.k>>3)) + smem_w_col_id];
+                cp_async_cg_shared_global<16>(
+                    &smem_w[0][smem_w_row_id][smem_w_col_id], 
+                    &W_ptr[w_offset + (smem_w_row_id*(args.k>>3)) + smem_w_col_id]);
             }
         }
+        cp_async_commit_group();
+        cp_async_wait_group<0>();
+        __syncthreads();
     }
-    __syncthreads();
 
     for (int outer_iter = 1; outer_iter < n_outer_iters; ++outer_iter) {
         int load_buf_idx = outer_iter & 0x1;
@@ -181,23 +191,28 @@ __global__ void linear_v2_kernel(LinearArgs args)
         int w_offset = blockIdx.x * kThreadblockShapeN * (args.k>>3) + outer_iter * kThreadblockShapeKPacked;
         
         #pragma unroll
-        for (int i = 0; i < kXEntriesPerThread; ++i) {
+        for (int i = 0; i < kNXCopyIters; ++i) {
             int flattened_thread_id = threadIdx.x + i * blockDim.x;
-            int smem_x_row_id = flattened_thread_id / kThreadblockShapeKPacked;
-            int smem_x_col_id = flattened_thread_id % kThreadblockShapeKPacked;
-            if (smem_x_row_id < kThreadblockShapeM) {
-                smem_x[load_buf_idx][smem_x_row_id][smem_x_col_id] = X_ptr[x_offset + (smem_x_row_id*(args.k>>3)) + smem_x_col_id];
+            int smem_x_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
+            int smem_x_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
+            if (smem_x_row_id < kThreadblockShapeM) { // Out-of-bounds check
+                cp_async_cg_shared_global<16>(
+                    &smem_x[load_buf_idx][smem_x_row_id][smem_x_col_id], 
+                    &X_ptr[x_offset + (smem_x_row_id*(args.k>>3)) + smem_x_col_id]);
             }
         }
         #pragma unroll
-        for (int i = 0; i < kWEntriesPerThread; ++i) {
+        for (int i = 0; i < kNWCopyIters; ++i) {
             int flattened_thread_id = threadIdx.x + i * blockDim.x;
-            int smem_w_row_id = flattened_thread_id / kThreadblockShapeKPacked;
-            int smem_w_col_id = flattened_thread_id % kThreadblockShapeKPacked;
-            if (smem_w_row_id < kThreadblockShapeN) {
-                smem_w[load_buf_idx][smem_w_row_id][smem_w_col_id] = W_ptr[w_offset + (smem_w_row_id*(args.k>>3)) + smem_w_col_id];
+            int smem_w_row_id = flattened_thread_id / (kThreadblockShapeKPacked/4);
+            int smem_w_col_id = (flattened_thread_id % (kThreadblockShapeKPacked/4))<<2;
+            if (smem_w_row_id < kThreadblockShapeN) { // Out-of-bounds check
+                cp_async_cg_shared_global<16>(
+                    &smem_w[load_buf_idx][smem_w_row_id][smem_w_col_id], 
+                    &W_ptr[w_offset + (smem_w_row_id*(args.k>>3)) + smem_w_col_id]);
             }
         }
+        cp_async_commit_group();
 
         #pragma unroll
         for (int mid = 0; mid < kInstsPerWarpM; ++mid) {
@@ -217,6 +232,7 @@ __global__ void linear_v2_kernel(LinearArgs args)
                 }
             }
         }
+        cp_async_wait_group<0>();
         __syncthreads();
     }
 

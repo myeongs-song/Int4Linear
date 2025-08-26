@@ -5,7 +5,7 @@
 #include <cuda_pipeline.h>
 
 #define LOG2_WARP_SIZE 5
-
+#define cdiv(a, b) ((a) + (b) - 1) / (b)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -124,12 +124,9 @@ __global__ void linear_v1_5_kernel(LinearArgs args)
 
     int n_outer_iters = (args.k + kThreadblockShapeK - 1) / (kThreadblockShapeK);
 
-    constexpr int kXEntriesPerThread
-        = kThreadblockShapeM * kThreadblockShapeKPacked / 
-        ((kWarpsPerThreadblockM * kWarpsPerThreadblockN) << LOG2_WARP_SIZE);
-    constexpr int kWEntriesPerThread
-        = kThreadblockShapeN * kThreadblockShapeKPacked / 
-        ((kWarpsPerThreadblockM * kWarpsPerThreadblockN) << LOG2_WARP_SIZE);
+    constexpr int kNThreads = (kWarpsPerThreadblockM * kWarpsPerThreadblockN) << LOG2_WARP_SIZE;
+    constexpr int kNXCopyIters = cdiv(kThreadblockShapeM * kThreadblockShapeKPacked, kNThreads);
+    constexpr int kNWCopyIters = cdiv(kThreadblockShapeN * kThreadblockShapeKPacked, kNThreads);
 
     for (int outer_iter = 0; outer_iter < n_outer_iters; ++outer_iter) {
         // mem -> shmem
@@ -137,20 +134,24 @@ __global__ void linear_v1_5_kernel(LinearArgs args)
         int w_offset = blockIdx.x * kThreadblockShapeN * (args.k>>3) + outer_iter * kThreadblockShapeKPacked;
         
         #pragma unroll
-        for (int i = 0; i < kXEntriesPerThread; ++i) {
+        for (int i = 0; i < kNXCopyIters; ++i) {
             int flattened_thread_id = threadIdx.x + i * blockDim.x;
-            // TODO: put outbound checking
             int smem_x_row_id = flattened_thread_id / kThreadblockShapeKPacked;
             int smem_x_col_id = flattened_thread_id % kThreadblockShapeKPacked;
-            smem_x[smem_x_row_id][smem_x_col_id] = X_ptr[x_offset + (smem_x_row_id*(args.k>>3)) + smem_x_col_id];
+            if (smem_x_row_id < kThreadblockShapeM) { 
+                smem_x[smem_x_row_id][smem_x_col_id] 
+                    = X_ptr[x_offset + (smem_x_row_id*(args.k>>3)) + smem_x_col_id];
+            }
         }
         #pragma unroll
-        for (int i = 0; i < kWEntriesPerThread; ++i) {
+        for (int i = 0; i < kNWCopyIters; ++i) {
             int flattened_thread_id = threadIdx.x + i * blockDim.x;
-            // TODO: put outbound checking
             int smem_w_row_id = flattened_thread_id / kThreadblockShapeKPacked;
             int smem_w_col_id = flattened_thread_id % kThreadblockShapeKPacked;
-            smem_w[smem_w_row_id][smem_w_col_id] = W_ptr[w_offset + (smem_w_row_id*(args.k>>3)) + smem_w_col_id];
+            if (smem_w_row_id < kThreadblockShapeN) { 
+                smem_w[smem_w_row_id][smem_w_col_id] 
+                    = W_ptr[w_offset + (smem_w_row_id*(args.k>>3)) + smem_w_col_id];
+            }
         }
         __syncthreads();
 

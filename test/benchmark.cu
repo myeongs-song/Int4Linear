@@ -1,4 +1,4 @@
-#define _BENCHMARK
+//#define _BENCHMARK
 #ifdef _BENCHMARK
 
 
@@ -20,7 +20,7 @@ int main(void) {
 
     srand(time(NULL));
 
-    int m = 8192, n = 8192, k = 8192;
+    int m = 8192, n = 8192, k = 8192*2;
     int packed_k = (k+8-1) / 8;
 
     // Initialize tensors (host-side) 
