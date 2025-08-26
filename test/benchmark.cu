@@ -9,7 +9,7 @@
 
 #include <cuda.h>
 
-#include "kernels/linear_v1.5.h"
+#include "kernels/linear_v2.h"
 #include "utils/packer.h"
 
 

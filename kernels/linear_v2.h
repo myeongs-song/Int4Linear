@@ -123,8 +123,8 @@ __global__ void linear_v2_kernel(LinearArgs args)
     constexpr int kInstsPerWarpN = LinearConfig::kInstsPerWarpN;
     constexpr int kInstsPerWarpK = LinearConfig::kInstsPerWarpK;
 
-    __shared__ int smem_x[2][LinearConfig::kThreadblockShapeM][LinearConfig::kThreadblockShapeKPacked];
-    __shared__ int smem_w[2][LinearConfig::kThreadblockShapeN][LinearConfig::kThreadblockShapeKPacked];
+    __shared__ int smem_x[2][kThreadblockShapeM][kThreadblockShapeKPacked];
+    __shared__ int smem_w[2][kThreadblockShapeN][kThreadblockShapeKPacked];
 
     int32_t X_frag[4];
     int32_t W_frag[2];
