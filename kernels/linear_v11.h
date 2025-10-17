@@ -505,7 +505,6 @@ struct Int4LinearDevice {
         warp_iterator_w_.advance();
     }
 
-
     // Jang
     __device__ __forceinline__ void prologue() {
         #pragma unroll
@@ -587,13 +586,10 @@ struct Int4LinearDevice {
 
         #pragma unroll
         for (int mid = 0; mid < kInstsPerWarpM; ++mid) {
-            int y_inst_row_offset = y_warp_row_offset + mid * 16;
+            int y_row_idx0 = y_warp_row_offset + (mid * 16) + (lane_id_>>2);
+            int y_row_idx1 = y_row_idx0 + 8;
             for (int nid = 0; nid < kInstsPerWarpN; ++nid) {
-                int y_inst_col_offset = y_warp_col_offset + nid * 8;
-
-                int y_row_idx0 = y_inst_row_offset + (lane_id_>>2);
-                int y_row_idx1 = y_row_idx0 + 8;
-                int y_col_idx0 = y_inst_col_offset + ((lane_id_&0x3) << 1);
+                int y_col_idx0 = y_warp_col_offset + (nid * 8) + ((lane_id_&0x3) << 1);
                 int y_col_idx1 = y_col_idx0 + 1;
 
                 if (y_row_idx0 < args_.m && y_col_idx0 < args_.n) Y_ptr_[y_row_idx0*args_.n+y_col_idx0] = Y_frag_[mid][nid][0];
