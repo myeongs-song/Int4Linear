@@ -147,7 +147,7 @@ struct Swizzle {
 // Song
 template <
     int kThreadblockShape0_, int kThreadblockShape1Packed_, 
-    int kElementsPerVector_, int kNThreads_, int kStages_>
+    int kElementsPerVector_, int kThreads_, int kStages_>
 struct ThreadblockIterator {
 
     // Compile-time constants
@@ -155,10 +155,9 @@ struct ThreadblockIterator {
     static constexpr int kThreadblockShape1Packed = kThreadblockShape1Packed_;  // dim = 1 (k)
     static constexpr int kElementsPerVector = kElementsPerVector_;
     static constexpr int kElementsPerBuffer = kThreadblockShape0 * kThreadblockShape1Packed;
-    static constexpr int kNThreads = kNThreads_;
+    static constexpr int kThreads = kThreads_;
     static constexpr int kStages = kStages_;
-    static constexpr int kStride = kNThreads * kElementsPerVector;
-
+    static constexpr int kStride = kThreads * kElementsPerVector;
 
     // Data members
     // id
@@ -169,38 +168,40 @@ struct ThreadblockIterator {
 
     // pre-computed addresses, offsets, and masks
     uint32_t smem_base_addr_;
+    uint32_t smem_buf_addr_;
+    uint32_t smem_addr_;
     
     // matrix size-related
     int csize_packed_;
     int csize_relative_; // for the last iteration in col direction
     int rsize_relative_; // for the last iteration in row direction
-    int n_threadblock_k_iters_;
 
     // current states
-    int cur_inner_iter_;
     int cur_buf_;
-    int cur_threadblock_k_iter_;
+    int cur_row_;
+    int cur_col_;
 
     // Methods
     // NOTE: csize is in int32_t units
     __device__ __forceinline__ ThreadblockIterator(
         const int &rsize, const int &csize_packed, 
-        const int &n_threadblock_k_iters, 
         const int &relative_block_id, const int &thread_id, 
         int32_t *smem_ptr,
         int gmem_base_offset
     ):
         csize_packed_(csize_packed),
         thread_id_(thread_id),
-        n_threadblock_k_iters_(n_threadblock_k_iters), gmem_base_offset_(gmem_base_offset) {  
+        gmem_base_offset_(gmem_base_offset) {  
         
-        cur_inner_iter_ = 0;
         cur_buf_ = 0;
-        cur_threadblock_k_iter_ = 0;
+        cur_row_ = (thread_id_*kElementsPerVector) / kThreadblockShape1Packed;
+        cur_col_ = (thread_id_*kElementsPerVector) % kThreadblockShape1Packed;
 
         // init smem_addrs
         smem_base_addr_ = __cvta_generic_to_shared(smem_ptr + (thread_id_*kElementsPerVector));
-        
+        smem_buf_addr_ = smem_base_addr_;
+        smem_addr_ = smem_buf_addr_;
+
         // get sizes for masking
         int csize_relative = csize_packed % kThreadblockShape1Packed; // for the last iteration in col direction
         csize_relative_ = (csize_relative == 0) ? kThreadblockShape1Packed : csize_relative;
@@ -209,38 +210,49 @@ struct ThreadblockIterator {
 
     // advance to the next buffer
     __device__ __forceinline__ void advance() {
-        gmem_base_offset_ += kThreadblockShape1Packed;
-        cur_inner_iter_ = 0;
+        int threadwise_base = thread_id_ * kElementsPerVector;
         cur_buf_ = (cur_buf_ < kStages-1) ? (cur_buf_+1) : 0;
-        cur_threadblock_k_iter_++;
+        smem_buf_addr_ = smem_base_addr_ + (cur_buf_ * kElementsPerBuffer * sizeof(int32_t));
+        smem_addr_ = smem_buf_addr_ + (threadwise_base * sizeof(int32_t));
+        cur_row_ = (threadwise_base) / kThreadblockShape1Packed;;
+        cur_col_ = (threadwise_base) % kThreadblockShape1Packed;
+        gmem_base_offset_ += kThreadblockShape1Packed;
     }
 
-    // check if the current position is valid
-    __device__ __forceinline__ bool valid() {
-        int offset = thread_id_*kElementsPerVector + cur_inner_iter_*kStride;
-        int row = offset / kThreadblockShape1Packed;
-        int col = offset % kThreadblockShape1Packed;
-        bool row_valid = (row < rsize_relative_) ? true : false;
-        bool col_valid_in_last = (col < csize_relative_) ? true : false;
-        bool col_valid = (cur_threadblock_k_iter_ < n_threadblock_k_iters_-1) ? true : col_valid_in_last;
-        return row_valid & col_valid;
+    // check if the current position is valid in inner loops
+    __device__ __forceinline__ bool valid_inner() {
+        return cur_row_ < rsize_relative_;
+    }
+
+    // check if the current position is valid in the last iteration
+    __device__ __forceinline__ bool valid_last() {
+        bool row_valid = (cur_row_ < rsize_relative_);
+        bool col_valid = (cur_col_ < csize_relative_);
+        return row_valid && col_valid;
     }
 
     __device__ __forceinline__ uint32_t get_smem_addr() {
-        uint32_t buf_offset = cur_buf_ * kElementsPerBuffer * sizeof(int32_t);
-        uint32_t iter_offset = cur_inner_iter_ * kStride * sizeof(int32_t);
-        return smem_base_addr_ + buf_offset + iter_offset;
+        return smem_addr_;
     }
 
     __device__ __forceinline__ int get_gmem_offset() {
-        int offset = thread_id_*kElementsPerVector + cur_inner_iter_*kStride;
-        int row = offset / kThreadblockShape1Packed;
-        int col = offset % kThreadblockShape1Packed;
-        return gmem_base_offset_ + row*csize_packed_ + col;
+        return gmem_base_offset_ + cur_row_*csize_packed_ + cur_col_;
     }
 
     __device__ __forceinline__ void operator ++() {
-        cur_inner_iter_++;
+        smem_addr_ += (kStride * sizeof(int32_t));
+        // NOTE: kStride and kThreadblockShape1Packed are always power of 2 
+        // That is, one of them is always divisible by the other one.
+        if constexpr (kStride >= kThreadblockShape1Packed) {
+            cur_row_ += (kStride / kThreadblockShape1Packed);
+        }
+        else {
+            cur_col_ += kStride;
+            if (cur_col_ >= kThreadblockShape1Packed) {
+                cur_col_ = 0;
+                cur_row_ += 1;
+            }         
+        }
     }
 }; 
 
@@ -267,10 +279,11 @@ struct WarpIterator {
     int32_t * __restrict__ smem_ptr;
 
     // base offset
-    int smem_base_offset_;
+    uint32_t smem_base_addr_;
+    uint32_t smem_buf_addr_;
+    uint32_t smem_addr_;
 
     // current states
-    int cur_i_; // inst along 0-axis (m or n)
     int cur_k_; // inst along k-axis
     int cur_buf_;
 
@@ -278,35 +291,35 @@ struct WarpIterator {
         int32_t *smem_ptr, 
         const int &smem_base_offset
     ): 
-        smem_ptr(smem_ptr),
-        smem_base_offset_(smem_base_offset) {
+        smem_ptr(smem_ptr) {
+
+        smem_base_addr_ = __cvta_generic_to_shared(smem_ptr + smem_base_offset);
+        smem_buf_addr_ = smem_base_addr_;
+        smem_addr_ = smem_buf_addr_;
         
-        cur_i_ = 0;
         cur_k_ = 0;
         cur_buf_ = 0;
     }
 
     __device__ __forceinline__ void advance() {
-        cur_i_ = 0;
-        cur_k_ = 0;
-        cur_buf_ = (cur_buf_ < kStages-1) ? (cur_buf_+1) : 0;
+        cur_k_++;
+        if (cur_k_ == kInstsPerWarp1) {
+            cur_k_ = 0;
+            cur_buf_ = (cur_buf_ < kStages-1) ? (cur_buf_+1) : 0;    
+            smem_buf_addr_ = smem_base_addr_ + (cur_buf_ * kElementsPerBuffer * sizeof(int32_t));
+            smem_addr_ = smem_buf_addr_;
+        }
+        else {
+            smem_addr_ = smem_buf_addr_ + (cur_k_ << 3);
+        }
     }
 
     __device__ __forceinline__ uint32_t get_smem_addr() {
-        int buf_offset = cur_buf_ * kElementsPerBuffer;
-        int inst_offset = smem_base_offset_ 
-                        + (cur_k_<<3) 
-                        + cur_i_*(kThreadblockShape1Packed<<kLog2RowsPerInsts);
-        uint32_t smem_addr = __cvta_generic_to_shared(smem_ptr + buf_offset + inst_offset);
-        return smem_addr;
+        return smem_addr_;
     }
 
     __device__ __forceinline__ void operator ++() {
-        cur_i_++;
-        if (cur_i_ == kInstsPerWarp0) {
-            cur_i_ = 0;
-            cur_k_++;
-        }
+        smem_addr_ += ((kThreadblockShape1Packed << kLog2RowsPerInsts) * sizeof(int32_t));
     }
 };
 
@@ -336,9 +349,9 @@ struct Int4LinearDevice {
     static constexpr int kStages = LinearConfig::kStages;
     static constexpr int kElementsPerVector = LinearConfig::kElementsPerVector;
 
-    static constexpr int kNThreads = (kWarpsPerThreadblockM * kWarpsPerThreadblockN) << LOG2_WARP_SIZE;
-    static constexpr int kNXPositions = cdiv(kThreadblockShapeM*kThreadblockShapeKPacked, kNThreads*kElementsPerVector);
-    static constexpr int kNWPositions = cdiv(kThreadblockShapeN*kThreadblockShapeKPacked, kNThreads*kElementsPerVector);
+    static constexpr int kThreads = (kWarpsPerThreadblockM * kWarpsPerThreadblockN) << LOG2_WARP_SIZE;
+    static constexpr int kNXPositions = cdiv(kThreadblockShapeM*kThreadblockShapeKPacked, kThreads*kElementsPerVector);
+    static constexpr int kNWPositions = cdiv(kThreadblockShapeN*kThreadblockShapeKPacked, kThreads*kElementsPerVector);
     static constexpr int kNXCopyIters = cdiv(kNXPositions, kInstsPerWarpK);
     static constexpr int kNWCopyIters = cdiv(kNWPositions, kInstsPerWarpK);
 
@@ -346,10 +359,10 @@ struct Int4LinearDevice {
     static_assert(kStages > 2, "kStages must be larger than 2.");
 
     using ThreadblockIteratorX = ThreadblockIterator<
-        kThreadblockShapeM, kThreadblockShapeKPacked, kElementsPerVector, kNThreads, kStages
+        kThreadblockShapeM, kThreadblockShapeKPacked, kElementsPerVector, kThreads, kStages
     >;
     using ThreadblockIteratorW = ThreadblockIterator<
-        kThreadblockShapeN, kThreadblockShapeKPacked, kElementsPerVector, kNThreads, kStages
+        kThreadblockShapeN, kThreadblockShapeKPacked, kElementsPerVector, kThreads, kStages
     >;
     using WarpIteratorX = WarpIterator<
         kThreadblockShapeM, kThreadblockShapeKPacked, 4, kInstsPerWarpM, kInstsPerWarpK, kStages
@@ -403,14 +416,12 @@ struct Int4LinearDevice {
         n_threadblock_k_iters_(cdiv(args.k, kThreadblockShapeK)),
         threadblock_iterator_x_(
             args.m, (args.k >> 3),
-            n_threadblock_k_iters_,
             block_id_y_, thread_id_,
             smem_x_,
             block_id_y_ * kThreadblockShapeM * (args.k >> 3)
         ),
         threadblock_iterator_w_(
             args.n, (args.k >> 3),
-            n_threadblock_k_iters_,
             block_id_x_, thread_id_,
             smem_w_,
             block_id_x_ * kThreadblockShapeN * (args.k >> 3)
@@ -429,29 +440,27 @@ struct Int4LinearDevice {
         ) {
 
         // Initialize accumulators
-        #pragma unroll
-        for (int m = 0; m < kInstsPerWarpM; ++m) {
-            #pragma unroll
-            for (int n = 0; n < kInstsPerWarpN; ++n) {
-                #pragma unroll
-                for (int i = 0; i < 4; ++i) {
-                    Y_frag_[m][n][i] = 0;
-                }
-            }
-        }
+        memset(Y_frag_, 0, sizeof(Y_frag_));
+
         X_ptr_ = reinterpret_cast<int32_t*>(args.X_ptr);
         W_ptr_ = reinterpret_cast<int32_t*>(args.W_ptr);
         Y_ptr_ = reinterpret_cast<int32_t*>(args.Y_ptr);
     }
 
     // Song
+    template <int kValidationMode = 0>
     __device__ __forceinline__ void fill_smem() {
 
         #pragma unroll
         for (int i = 0; i < kNXCopyIters; ++i) {
             int gmem_offset = threadblock_iterator_x_.get_gmem_offset();
             uint32_t smem_addr = threadblock_iterator_x_.get_smem_addr();
-            bool valid = threadblock_iterator_x_.valid();
+            if constexpr (kValidationMode == 0) {
+                bool valid = threadblock_iterator_x_.valid_inner();
+            }
+            else {
+                bool valid = threadblock_iterator_x_.valid_last();
+            }
             cp_async_predicated<kElementsPerVector*4>(smem_addr, &X_ptr_[gmem_offset], valid);
             ++threadblock_iterator_x_;
         }
@@ -459,7 +468,12 @@ struct Int4LinearDevice {
         for (int i = 0; i < kNWCopyIters; ++i) {
             int gmem_offset = threadblock_iterator_w_.get_gmem_offset();
             uint32_t smem_addr = threadblock_iterator_w_.get_smem_addr();
-            bool valid = threadblock_iterator_w_.valid();
+            if constexpr (kValidationMode == 0) {
+                bool valid = threadblock_iterator_w_.valid_inner();
+            }
+            else {
+                bool valid = threadblock_iterator_w_.valid_last();
+            }
             cp_async_predicated<kElementsPerVector*4>(smem_addr, &W_ptr_[gmem_offset], valid);
             ++threadblock_iterator_w_;
         }
@@ -490,7 +504,7 @@ struct Int4LinearDevice {
         #pragma unroll
         for (int stage = 0; stage < kStages-1; ++stage) {
             for (int k = 0; k < kInstsPerWarpK; ++k) {
-                this->fill_smem();
+                this->fill_smem<0>();
             }
             cp_async_commit_group();
             threadblock_iterator_x_.advance();
@@ -531,6 +545,7 @@ struct Int4LinearDevice {
      *          wait_group<kStages-2> // in cutlass, we need to "transform" at the last warp_k 
      *          __syncthreads()
      */
+    template <int kValidationMode = 0>
     __device__ __forceinline__ 
     void warp_k_iter(const int &load) {
 
@@ -541,11 +556,11 @@ struct Int4LinearDevice {
             this->warp_mn_iter(warp_k&0x1);
             
             if (warp_k + 1 < kInstsPerWarpK && load) {
-                this->fill_smem();
+                this->fill_smem<kValidationMode>();
             }
             if (warp_k + 2 == kInstsPerWarpK) {
                 if (load) {
-                    this->fill_smem();
+                    this->fill_smem<kValidationMode>();
                 }
                 cp_async_commit_group();
                 cp_async_wait_group<kStages - 2>();
@@ -560,12 +575,14 @@ struct Int4LinearDevice {
         
         this->fill_regs(0);
         // main loop
-        for (int block_k = 0; block_k < (n_threadblock_k_iters_-kStages+1); ++block_k) {
-            this->warp_k_iter(1);
+        for (int block_k = 0; block_k < (n_threadblock_k_iters_-kStages); ++block_k) {
+            this->warp_k_iter<0>(1);
         }
+        // load last tile with appropriate validation
+        this->warp_k_iter<1>(1);  
         // epilogue
         for (int block_k = 0; block_k < (kStages-1); ++block_k) {
-            this->warp_k_iter(0);
+            this->warp_k_iter<0>(0);
         }
     }
 
