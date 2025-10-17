@@ -586,16 +586,18 @@ struct Int4LinearDevice {
 
         #pragma unroll
         for (int mid = 0; mid < kInstsPerWarpM; ++mid) {
-            int y_row_idx0 = y_warp_row_offset + (mid * 16) + (lane_id_>>2);
-            int y_row_idx1 = y_row_idx0 + 8;
+            int y_row_offset0 = (y_warp_row_offset + (mid*16) + (lane_id_>>2)) * args_.n;
+            int y_row_offset1 = y_row_offset0 + (8*args_.n);
+
+            #pragma unroll
             for (int nid = 0; nid < kInstsPerWarpN; ++nid) {
-                int y_col_idx0 = y_warp_col_offset + (nid * 8) + ((lane_id_&0x3) << 1);
+                int y_col_idx0 = y_warp_col_offset + (nid*8) + ((lane_id_&0x3)<<1);
                 int y_col_idx1 = y_col_idx0 + 1;
 
-                if (y_row_idx0 < args_.m && y_col_idx0 < args_.n) Y_ptr_[y_row_idx0*args_.n+y_col_idx0] = Y_frag_[mid][nid][0];
-                if (y_row_idx0 < args_.m && y_col_idx1 < args_.n) Y_ptr_[y_row_idx0*args_.n+y_col_idx1] = Y_frag_[mid][nid][1];
-                if (y_row_idx1 < args_.m && y_col_idx0 < args_.n) Y_ptr_[y_row_idx1*args_.n+y_col_idx0] = Y_frag_[mid][nid][2];
-                if (y_row_idx1 < args_.m && y_col_idx1 < args_.n) Y_ptr_[y_row_idx1*args_.n+y_col_idx1] = Y_frag_[mid][nid][3];
+                if (y_row_idx0 < args_.m && y_col_idx0 < args_.n) Y_ptr_[y_row_offset0+y_col_idx0] = Y_frag_[mid][nid][0];
+                if (y_row_idx0 < args_.m && y_col_idx1 < args_.n) Y_ptr_[y_row_offset0+y_col_idx1] = Y_frag_[mid][nid][1];
+                if (y_row_idx1 < args_.m && y_col_idx0 < args_.n) Y_ptr_[y_row_offset1+y_col_idx0] = Y_frag_[mid][nid][2];
+                if (y_row_idx1 < args_.m && y_col_idx1 < args_.n) Y_ptr_[y_row_offset1+y_col_idx1] = Y_frag_[mid][nid][3];
             }
         }
     }
