@@ -472,7 +472,7 @@ struct Int4LinearDevice {
                 valid = threadblock_iterator_x_.valid_last();
             }
             if (valid) {
-                cp_async_cg_shared_global<kElementsPerVector*4>(smem_addr, &X_ptr_[gmem_offset], valid);
+                cp_async_cg_shared_global<kElementsPerVector*4>(smem_addr, &X_ptr_[gmem_offset]);
             }
             else {
                 if constexpr (kElementsPerVector == 1) {
@@ -499,7 +499,7 @@ struct Int4LinearDevice {
                 valid = threadblock_iterator_w_.valid_last();
             }
             if (valid) {
-                cp_async_predicated<kElementsPerVector*4>(smem_addr, &W_ptr_[gmem_offset], valid);
+                cp_async_cg_shared_global<kElementsPerVector*4>(smem_addr, &W_ptr_[gmem_offset]);
             }
             else {
                 if constexpr (kElementsPerVector == 1) {
