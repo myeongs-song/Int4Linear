@@ -1,19 +1,21 @@
-#ifndef _CUSTOM_INT4_LINEAR_CU
-#define _CUSTOM_INT4_LINEAR_CU
-
-#define _TEST_LINEAR_V2
-
-#ifdef _TEST_LINEAR_V2
+#ifndef _CUSTOM_INT4_LINEAR_CU_V21
+#define _CUSTOM_INT4_LINEAR_CU_V21
 
 #include <cuda.h>
 #include <stdio.h>
 
-#include "linear_v3.h"
+#include "linear_v21.h"
 
-void linear_v3_launch(
+void linear_v21_launch(
     void *x_packed_d, void *w_packed_d, void *y_d, int m, int n, int k
 ) {
-    using config = LinearConfig<6, 6, 7, 5, 4>;
+    using config = LinearConfig<8, 7, 7, 6, 6, 4>;
+
+    cudaFuncSetAttribute(
+        linear_v21_kernel<config>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        96 * 1024
+    );
 
     constexpr int n_threads = config::kWarpsPerThreadblockM * config::kWarpsPerThreadblockN * (1 << LOG2_WARP_SIZE);
     constexpr int out_tile_size_m = config::kThreadblockShapeM;
@@ -30,17 +32,21 @@ void linear_v3_launch(
         .m = m, .n = n, .k = k
     };
 
-    linear_v3_kernel<config><<<gridDim, blockDim>>>(args);
+    constexpr int kSmemSize = config::kSmemSize;
+
+    linear_v21_kernel<config><<<gridDim, blockDim, kSmemSize>>>(args);
     
     cudaDeviceSynchronize();
+
+#ifdef __DEBUG
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("CUDA FAILED: %s\n", cudaGetErrorString(err));
     }
     else printf("CUDA SUCCESS!\n");
+#endif
 
 }
 
-#endif
 
 #endif

@@ -8,20 +8,19 @@
 #include <chrono>
 
 #include <cuda.h>
+#include <cutlass/cutlass.h>
+#include <cutlass/gemm/device/gemm.h>
 
-#include "kernels/linear_v21.h"
 #include "utils/packer.h"
 
-
 int compare(const void* a, const void* b) { return (*(float*)a > *(float*)b) ? 1 : 0; }
-
 
 int main(void) {
 
     srand(time(NULL));
 
-    int m = 32768, n = m, k = 2*m;
-    int packed_k = (k+8-1) / 8;
+    constexpr int m = 32768, n = m, k = 2*m;
+    constexpr int packed_k = (k+8-1) / 8;
 
     // Initialize tensors (host-side) 
     int *x_unpacked_h = (int *)malloc(m * sizeof(int) * k);
@@ -43,34 +42,32 @@ int main(void) {
     cudaMemcpy(x_packed_d, (void*)x_packed_h, m*sizeof(int)*packed_k, cudaMemcpyHostToDevice);
     cudaMemcpy(w_packed_d, (void*)w_packed_h, n*sizeof(int)*packed_k, cudaMemcpyHostToDevice);
 
-    using config = LinearConfig<8, 7, 7, 6, 6, 4>;
+    // Init cutlass kernel
+    using Gemm = cutlass::gemm::device::Gemm<
+        cutlass::int4b_t,
+        cutlass::layout::RowMajor,
+        cutlass::int4b_t,
+        cutlass::layout::ColumnMajor,
+        int32_t,
+        cutlass::layout::RowMajor,
+        int32_t,
+        cutlass::arch::OpClassTensorOp,
+        cutlass::arch::Sm80
+    >;
+    Gemm gemm_op;
 
-    // Architecture-specific logic (extend shared memory)
-    cudaFuncSetAttribute(
-        linear_v21_kernel<config>,
-        cudaFuncAttributeMaxDynamicSharedMemorySize,
-        96 * 1024
-    );
-
-    constexpr int n_threads = config::kWarpsPerThreadblockM * config::kWarpsPerThreadblockN * (1 << LOG2_WARP_SIZE);
-    constexpr int out_tile_size_m = config::kThreadblockShapeM;
-    constexpr int out_tile_size_n = config::kThreadblockShapeN;
-    int n_blocks_m = (m+out_tile_size_m-1)/out_tile_size_m;
-    int n_blocks_n = (n+out_tile_size_n-1)/out_tile_size_n;
-    dim3 blockDim(n_threads, 1);
-    dim3 gridDim(n_blocks_n, n_blocks_m);
-
-    LinearArgs args = {
-        .X_ptr = x_packed_d,
-        .W_ptr = w_packed_d,
-        .Y_ptr = y_d,
-        .m = m, .n = n, .k = k
+    typename Gemm::Arguments args{
+        {m, n, k}, // Gemm Problem Size
+        {(cutlass::int4b_t *)x_packed_d, k}, // Tensor A
+        {(cutlass::int4b_t *)w_packed_d, k}, // Tensor B
+        {(int32_t *)y_d, n}, // Tensor C
+        {(int32_t *)y_d, n}, // Tensor D
+        {1.0, 0.0} // alpha, beta
     };
 
     // Warm-up phase
     for (int i = 0; i < 5; ++i) {
-        linear_v21_kernel<config><<<gridDim, blockDim, config::kSmemSize>>>(args);
-        cudaDeviceSynchronize();
+        gemm_op(args);
     }
 
     // Cache config (to clean-up L2 cache)
@@ -81,7 +78,6 @@ int main(void) {
     size_t size_fill = l2_size * 2;
     void *dummy;
     cudaMalloc(&dummy, size_fill);
-
 
     // Main loop
     int n_iters = 50;
@@ -97,7 +93,7 @@ int main(void) {
 
         // Get latency
         cudaEventRecord(start, 0);
-        linear_v21_kernel<config><<<gridDim, blockDim, config::kSmemSize>>>(args);
+        gemm_op(args);
         cudaEventRecord(end, 0);
         cudaEventSynchronize(end);
         float cur_ms = 0.0;

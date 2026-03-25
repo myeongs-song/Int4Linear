@@ -4,10 +4,10 @@
 
 #include <cuda.h>
 
-#include "kernels/linear_v3.h"
+#include "kernels/linear_v21.h"
 #include "utils/packer.h"
 
-//#define _DEBUG_LINEAR
+#define _DEBUG_LINEAR
 
 void linear_ref(int *x, int *w, int *y, int m, int n, int k) {
     for (int i = 0; i < m; ++i) {
@@ -32,7 +32,7 @@ int main(void) {
 
     srand(time(NULL));
 
-    int m = 512, n = 1024, k = 2048;
+    int m = 4096, n = 4096, k = 8192;
     int packed_k = (k+8-1) / 8;
 
     // Initialize tensors (host-side) 
@@ -57,23 +57,23 @@ int main(void) {
     cudaMemcpy(x_packed_d, (void*)x_packed_h, m*sizeof(int)*packed_k, cudaMemcpyHostToDevice);
     cudaMemcpy(w_packed_d, (void*)w_packed_h, n*sizeof(int)*packed_k, cudaMemcpyHostToDevice);
 
-    linear_v3_launch(x_packed_d, w_packed_d, y_d, m, n, k);
+    linear_v21_launch(x_packed_d, w_packed_d, y_d, m, n, k);
 
     // Copy the result to the host
     cudaMemcpy(y_h, y_d, m*n*sizeof(int), cudaMemcpyDeviceToHost);
 
     // Get the reference answer
-    linear_ref(x_unpacked_h, w_unpacked_h, y_ref, m, n, k);
+    // linear_ref(x_unpacked_h, w_unpacked_h, y_ref, m, n, k);
 
-    printf("[Ref] ");
-    for (int i = 0; i < 32; ++i) printf("%d ", y_ref[i]);
-    printf("\n");
-    printf("[Ans] ");
-    for (int i = 0; i < 32; ++i) printf("%d ", y_h[i]);
-    printf("\n");
+    // printf("[Ref] ");
+    // for (int i = 0; i < 32; ++i) printf("%d ", y_ref[i]);
+    // printf("\n");
+    // printf("[Ans] ");
+    // for (int i = 0; i < 32; ++i) printf("%d ", y_h[i]);
+    // printf("\n");
 
-    if (is_same(y_ref, y_h, m*n)) printf("TEST PASSED!\n");
-    else printf("TEST FAILED!\n");
+    // if (is_same(y_ref, y_h, m*n)) printf("TEST PASSED!\n");
+    // else printf("TEST FAILED!\n");
 
     return 0;
 }

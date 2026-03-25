@@ -474,17 +474,6 @@ struct Int4LinearDevice {
             if (valid) {
                 cp_async_cg_shared_global<kElementsPerVector*4>(smem_addr, &X_ptr_[gmem_offset]);
             }
-            else {
-                if constexpr (kElementsPerVector == 1) {
-                    smem_x_[x_smem_store_offset_ + x_smem_buf_offset] = 0;
-                }
-                else if constexpr (kElementsPerVector == 2) {
-                    *(reinterpret_cast<int2*>(&smem_x_[x_smem_store_offset_ + x_smem_buf_offset])) = make_int2(0, 0);
-                }
-                else {
-                    *(reinterpret_cast<int4*>(&smem_x_[x_smem_store_offset_ + x_smem_buf_offset])) = make_int4(0, 0, 0, 0);
-                }
-            }
             ++threadblock_iterator_x_;
         }
         #pragma unroll
@@ -500,17 +489,6 @@ struct Int4LinearDevice {
             }
             if (valid) {
                 cp_async_cg_shared_global<kElementsPerVector*4>(smem_addr, &W_ptr_[gmem_offset]);
-            }
-            else {
-                if constexpr (kElementsPerVector == 1) {
-                    smem_w_[w_smem_store_offset_ + w_smem_buf_offset] = 0;
-                }
-                else if constexpr (kElementsPerVector == 2) {
-                    *(reinterpret_cast<int2*>(&smem_w_[w_smem_store_offset_ + w_smem_buf_offset])) = make_int2(0, 0);
-                }
-                else {
-                    *(reinterpret_cast<int4*>(&smem_w_[w_smem_store_offset_ + w_smem_buf_offset])) = make_int4(0, 0, 0, 0);
-                }
             }
             ++threadblock_iterator_w_;
         }

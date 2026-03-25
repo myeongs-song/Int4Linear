@@ -1,15 +1,15 @@
-#ifndef _CUSTOM_INT4_LINEAR_CU
-#define _CUSTOM_INT4_LINEAR_CU
+#ifndef _CUSTOM_INT4_LINEAR_CU_V11
+#define _CUSTOM_INT4_LINEAR_CU_V11
 
 #include <cuda.h>
 #include <stdio.h>
 
-#include "linear_v1.5.h"
+#include "linear_v11.h"
 
-void linear_v1_5_launch(
+void linear_v11_launch(
     void *x_packed_d, void *w_packed_d, void *y_d, int m, int n, int k
 ) {
-    using config = LinearConfig<7, 6, 7, 5, 4>;
+    using config = LinearConfig<7, 7, 7, 6, 5, 3, 4>;
 
     constexpr int n_threads = config::kWarpsPerThreadblockM * config::kWarpsPerThreadblockN * (1 << LOG2_WARP_SIZE);
     constexpr int out_tile_size_m = config::kThreadblockShapeM;
@@ -26,7 +26,9 @@ void linear_v1_5_launch(
         .m = m, .n = n, .k = k
     };
 
-    linear_v1_5_kernel<config><<<gridDim, blockDim>>>(args);
+    constexpr int kSmemSize = config::kSmemSize;
+
+    linear_v11_kernel<config><<<gridDim, blockDim, kSmemSize>>>(args);
     
     cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();

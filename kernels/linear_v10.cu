@@ -1,19 +1,15 @@
-#ifndef _CUSTOM_INT4_LINEAR_CU
-#define _CUSTOM_INT4_LINEAR_CU
-
-#define _TEST_LINEAR_V2
-
-#ifdef _TEST_LINEAR_V2
+#ifndef _CUSTOM_INT4_LINEAR_CU_V10
+#define _CUSTOM_INT4_LINEAR_CU_V10
 
 #include <cuda.h>
 #include <stdio.h>
 
-#include "linear_v2.h"
+#include "linear_v10.h"
 
-void linear_v2_launch(
+void linear_v10_launch(
     void *x_packed_d, void *w_packed_d, void *y_d, int m, int n, int k
 ) {
-    using config = LinearConfig<6, 6, 7, 5, 4>;
+    using config = LinearConfig<7, 7, 7, 6, 6, 3>;
 
     constexpr int n_threads = config::kWarpsPerThreadblockM * config::kWarpsPerThreadblockN * (1 << LOG2_WARP_SIZE);
     constexpr int out_tile_size_m = config::kThreadblockShapeM;
@@ -30,7 +26,9 @@ void linear_v2_launch(
         .m = m, .n = n, .k = k
     };
 
-    linear_v2_kernel<config><<<gridDim, blockDim>>>(args);
+    constexpr int kSmemSize = config::kSmemSize;
+
+    linear_v10_kernel<config><<<gridDim, blockDim, kSmemSize>>>(args);
     
     cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();
@@ -41,6 +39,5 @@ void linear_v2_launch(
 
 }
 
-#endif
 
 #endif
