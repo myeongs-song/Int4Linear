@@ -697,7 +697,7 @@ struct Int4LinearDevice {
                     int2 vec0 = make_int2(d0, d1);
                     int2 vec1 = make_int2(d2, d3);
                     if (valid_row0) reinterpret_cast<int2*>(y_row_ptr0 + y_col_idx0)[0] = vec0;
-                    if (valid_row1) reinterpret_cast<int2*>(y_row_ptr0 + y_col_idx0)[0] = vec1;
+                    if (valid_row1) reinterpret_cast<int2*>(y_row_ptr1 + y_col_idx0)[0] = vec1;
                 }
                 else {
                     if (valid_row0 && valid_col0) y_row_ptr0[y_col_idx0] = d0;
