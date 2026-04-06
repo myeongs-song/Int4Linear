@@ -46,7 +46,8 @@ A multi-stage pipeline was implemented to effectively hide Global Memory latency
 
 ### 4. Micro-Architectural Tweaks
 * **Shared Memory Swizzling:** To prevent severe N-way bank conflicts during `ldmatrix` operations, a custom XOR-based swizzling layout (`<3, 4, 3>`) was applied. This creates a bijective mapping that perfectly rearranges the storage, eliminating bank conflicts entirely.
-<img width="1499" height="620" alt="image" src="https://github.com/user-attachments/assets/a2d3bc44-faa0-4ba9-a5b6-6acd6f54bdb7" />
+<img width="1723" height="727" alt="image" src="https://github.com/user-attachments/assets/793618d5-400d-4783-ac03-1a217d91837f" />
+
 
 * **Zig-Zag Computation:** Reused the weight operand register consumed at the end of one row immediately at the beginning of the subsequent row. This maximizes temporal locality at the register level and alleviates operand collector bottlenecks.
 
